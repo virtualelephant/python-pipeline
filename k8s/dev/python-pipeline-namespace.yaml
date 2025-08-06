@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: python-pipeline
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    environment: dev
+  annotations:
+    description: Namespace for Python microservices pipeline in dev cluster

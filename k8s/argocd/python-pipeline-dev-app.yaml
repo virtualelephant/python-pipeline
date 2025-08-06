@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: python-pipeline-dev
+  namespace: services
+  labels:
+    app.kubernetes.io/name: python-pipeline
+    environment: dev
+spec:
+  project: default
+  source:
+    repoURL: http://gitlab.home.virtualelephant.com/devops1/python-pipeline.git
+    targetRevision: main
+    path: k8s/dev
+  destination:
+    server: https://10.5.1.13:6443
+    namespace: python-pipeline
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

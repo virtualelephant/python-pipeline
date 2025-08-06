@@ -1,0 +1,99 @@
+stages:
+  - test
+  - build
+  - deploy
+
+test:
+  stage: test
+  image: python:3.9
+  before_script:
+    - pip install --no-cache-dir -r requirements.txt
+  script:
+    - echo "Running tests for $CI_PROJECT_DIR"
+    - export PYTHONPATH=$PYTHONPATH:$CI_PROJECT_DIR
+    - flake8 app.py
+    - pytest tests/test_app.py
+  tags:
+    - docker
+
+build:
+  stage: build
+  image: docker:24.0.5
+  services:
+    - name: docker:24.0.5-dind
+      command: ["--host=tcp://0.0.0.0:2375", "--tls=false", "--insecure-registry=harbor.home.virtualelephant.com"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+    GITLAB_RUNNER_SERVICE_TIMEOUT: 60
+  before_script:
+    - apk add --no-cache git
+    - echo "Logging in to $HARBOR_URL with username $HARBOR_USERNAME"
+    - docker login -u $HARBOR_USERNAME -p $HARBOR_PASSWORD $HARBOR_URL
+  script:
+    - docker build -t $REGISTRY_URL/$HARBOR_PROJECT/python-pipeline:$CI_COMMIT_SHA .
+    - docker push $REGISTRY_URL/$HARBOR_PROJECT/python-pipeline:$CI_COMMIT_SHA
+  tags:
+    - docker
+  
+deploy_dev:
+  stage: deploy
+  image: alpine:3.18.2
+  before_script:
+    - apk add --no-cache git yq
+    - git config --global user.email "gitlab-runner@virtualelephant.com"
+    - git config --global user.name "GitLab Runner"
+    - git config --global credential.helper store
+    - echo "http://$GITLAB_USER:GITLAB_TOKEN@gitlab.home.virtualelephant.com" > ~/.git-credentials
+    - git remote set-url origin http://$GITLAB_USER:$GITLAB_TOKEN@gitlab.home.virtualelephant.com/devops1/python-pipeline.git
+    - git fetch origin
+    - git checkout main
+    - git pull origin main
+  script:
+    - echo "Deploying to development environment"
+    - yq e -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'$REGISTRY_URL/$HARBOR_PROJECT/python-pipeline:$CI_COMMIT_SHA'"' k8s/dev/python-pipeline-deployment.yaml
+    - git add k8s/dev/python-pipeline-deployment.yaml
+    - git commit -m "Update Dev deployment image to $CI_COMMIT_SHA [skip ci]" || echo "No changes to commit"
+    - git push origin main
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  tags:
+    - docker
+  
+deploy_stage:
+  stage: deploy
+  image: docker:24.0.5
+  services:
+    - name: docker:24.0.5-dind
+      command: ["--host=tcp://0.0.0.0:2375", "--tls=false", "--insecure-registry=harbor.home.virtualelephant.com"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+    GITLAB_RUNNER_SERVICE_TIMEOUT: 60
+  before_script:
+    - apk add --no-cache git yq
+    - git config --global user.email "gitlab-runner@virtualelephant.com"
+    - git config --global user.name "GitLab Runner"
+    - git config --global credential.helper store
+    - echo "http://$GITLAB_USER:$GITLAB_TOKEN@gitlab.home.virtualelephant.com" > ~/.git-credentials
+    - git remote set-url origin http://$GITLAB_USER:$GITLAB_TOKEN@gitlab.home.virtualelephant.com/devops1/python-pipeline.git
+    - git fetch origin
+    - git checkout main
+    - git pull origin main
+  script:
+    - echo "Promoting to stage environment"
+    - docker login -u $HARBOR_USERNAME -p $HARBOR_PASSWORD $HARBOR_URL
+    - docker pull $REGISTRY_URL/$HARBOR_PROJECT/python-pipeline:$CI_COMMIT_SHA
+    - docker tag $REGISTRY_URL/$HARBOR_PROJECT/python-pipeline:$CI_COMMIT_SHA $REGISTRY_URL/$HARBOR_PROJECT/python-pipeline:stage-$CI_COMMIT_SHA
+    - docker push $REGISTRY_URL/$HARBOR_PROJECT/python-pipeline:stage-$CI_COMMIT_SHA
+    - yq e -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'$REGISTRY_URL/$HARBOR_PROJECT/python-pipeline:stage-$CI_COMMIT_SHA'"' k8s/stage/python-pipeline-deployment.yaml
+    - git add k8s/stage/python-pipeline-deployment.yaml
+    - git commit -m "Promote SHA $CI_COMMIT_SHA to stage [skip ci]" || echo "No changes to commit"
+    - git push origin main
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  tags:
+    - docker
